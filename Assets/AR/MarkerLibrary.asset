@@ -1,0 +1,49 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 848409ee8ba454f42a5ddff137688a27, type: 3}
+  m_Name: MarkerLibrary
+  m_EditorClassIdentifier: Unity.XR.ARSubsystems::UnityEngine.XR.ARSubsystems.XRReferenceImageLibrary
+  m_GuidLow: 5392020129490336596
+  m_GuidHigh: 7796249477430888363
+  m_DataStore:
+    m_Storage: []
+  m_Images:
+  - m_SerializedGuid:
+      m_GuidLow: 4884301192644514096
+      m_GuidHigh: 14185266448827363470
+    m_SerializedTextureGuid:
+      m_GuidLow: 9009784320752415741
+      m_GuidHigh: 6386371757672331
+    m_Size: {x: 0.2, y: 0.2}
+    m_SpecifySize: 1
+    m_Name: Turbine
+    m_Texture: {fileID: 2800000, guid: 9554f3fd2f1a7d098b07050c5fb01600, type: 3}
+  - m_SerializedGuid:
+      m_GuidLow: 5387611274196166902
+      m_GuidHigh: 1111022418520743316
+    m_SerializedTextureGuid:
+      m_GuidLow: 17913814963419645626
+      m_GuidHigh: 15354559464618259498
+    m_Size: {x: 0.2, y: 0.2}
+    m_SpecifySize: 1
+    m_Name: Satellite
+    m_Texture: {fileID: 2800000, guid: 3ab486baa7ccf89a2af42e2b7b5a16d5, type: 3}
+  - m_SerializedGuid:
+      m_GuidLow: 4732062642562327311
+      m_GuidHigh: 12325225902176591792
+    m_SerializedTextureGuid:
+      m_GuidLow: 10460725176978663783
+      m_GuidHigh: 5583296282272909882
+    m_Size: {x: 0.2, y: 0.2}
+    m_SpecifySize: 1
+    m_Name: GearTrain
+    m_Texture: {fileID: 2800000, guid: 0acc6967f620912b3acaa21c63da7b4d, type: 3}
