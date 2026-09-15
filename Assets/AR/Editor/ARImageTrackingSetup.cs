@@ -558,10 +558,12 @@ namespace ARVDU.EditorTools
 
             var infoLabel = CreateHudLabel(
                 canvasGo.transform, "Info Label",
-                anchorMin: new Vector2(1f, 1f), anchorMax: new Vector2(1f, 1f),
-                pivot: new Vector2(1f, 1f), anchoredPosition: new Vector2(-24f, -24f),
+                // Top-left and dropped down a bit -- top-center/right is where a phone's
+                // hole-punch or notch camera usually sits, so the label is kept clear of it.
+                anchorMin: new Vector2(0f, 1f), anchorMax: new Vector2(0f, 1f),
+                pivot: new Vector2(0f, 1f), anchoredPosition: new Vector2(24f, -110f),
                 size: new Vector2(620f, 140f), fontSize: 32f,
-                alignment: TextAlignmentOptions.TopRight);
+                alignment: TextAlignmentOptions.TopLeft);
             infoLabel.text = k_InfoText;
 
             var hud = canvasGo.AddComponent<ObjectNameHud>();
