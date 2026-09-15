@@ -16,6 +16,10 @@ namespace ARVDU
         [Tooltip("Must match the image name in the XRReferenceImageLibrary, exactly.")]
         public string referenceImageName;
 
+        [Tooltip("Shown in the on-screen HUD while this image is tracked. Falls back to " +
+                 "referenceImageName when left blank.")]
+        public string displayName;
+
         [Tooltip("Spawned once, as a child of the tracked image, when that image is first detected.")]
         public GameObject prefab;
 
@@ -52,6 +56,18 @@ namespace ARVDU
         readonly Dictionary<TrackableId, GameObject> m_Spawned = new();
         readonly Dictionary<string, TrackedImageBinding> m_BindingsByName =
             new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>Which bound images are currently visible, keyed by trackable so a removal can
+        /// look its label back up without touching the tracked image itself.</summary>
+        readonly Dictionary<TrackableId, string> m_VisibleLabels = new();
+        string m_CurrentLabel = string.Empty;
+
+        /// <summary>
+        /// Fired with the display name of the model that should be shown in the HUD -- the most
+        /// recently tracked one, falling back to any other still-visible model, or an empty
+        /// string once nothing is tracked.
+        /// </summary>
+        public event Action<string> activeLabelChanged;
 
         /// <summary>The image-to-prefab bindings, editable at runtime before the manager is enabled.</summary>
         public List<TrackedImageBinding> bindings => m_Bindings;
@@ -98,6 +114,11 @@ namespace ARVDU
             {
                 if (m_Spawned.Remove(removed.Key, out var instance) && instance != null)
                     Destroy(instance);
+
+                // The removed trackable still carries its last-known data, so its reference image
+                // name is available to look the label back up even though it is gone from m_Spawned.
+                if (m_BindingsByName.TryGetValue(removed.Value.referenceImage.name, out var binding))
+                    SetLabelVisible(removed.Key, ResolveLabel(binding), false);
             }
         }
 
@@ -139,6 +160,43 @@ namespace ARVDU
 
             if (instance.activeSelf != visible)
                 instance.SetActive(visible);
+
+            SetLabelVisible(trackedImage.trackableId, ResolveLabel(binding), visible);
+        }
+
+        static string ResolveLabel(TrackedImageBinding binding) =>
+            string.IsNullOrWhiteSpace(binding.displayName)
+                ? binding.referenceImageName
+                : binding.displayName;
+
+        /// <summary>
+        /// Tracks which trackable currently owns the HUD label. The most recently shown model
+        /// wins; if it is the one that just disappeared, any other still-visible model takes
+        /// over, or the label clears once nothing is left.
+        /// </summary>
+        void SetLabelVisible(TrackableId id, string label, bool visible)
+        {
+            if (visible)
+            {
+                m_VisibleLabels[id] = label;
+                SetCurrentLabel(label);
+                return;
+            }
+
+            if (!m_VisibleLabels.Remove(id) || m_CurrentLabel != label)
+                return;
+
+            using var remaining = m_VisibleLabels.Values.GetEnumerator();
+            SetCurrentLabel(remaining.MoveNext() ? remaining.Current : string.Empty);
+        }
+
+        void SetCurrentLabel(string label)
+        {
+            if (m_CurrentLabel == label)
+                return;
+
+            m_CurrentLabel = label;
+            activeLabelChanged?.Invoke(label);
         }
 
         static void Fit(GameObject instance, TrackedImageBinding binding, Vector2 imageSize)

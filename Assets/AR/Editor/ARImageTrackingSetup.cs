@@ -9,8 +9,10 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.XR;
 using UnityEngine.SceneManagement;
+using UnityEngine.UI;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
+using TMPro;
 
 namespace ARVDU.EditorTools
 {
@@ -37,12 +39,12 @@ namespace ARVDU.EditorTools
         /// <summary>Printed width of each marker, in metres. A4 landscape fits 20 cm comfortably.</summary>
         const float k_MarkerWidthMetres = 0.2f;
 
-        /// <summary>Reference image name -> marker texture, in library order.</summary>
-        static readonly (string imageName, string texturePath)[] k_Markers =
+        /// <summary>Reference image name -> marker texture and HUD display name, in library order.</summary>
+        static readonly (string imageName, string texturePath, string displayName)[] k_Markers =
         {
-            ("Turbine", k_MarkersDir + "/marker_turbine.png"),
-            ("Satellite", k_MarkersDir + "/marker_satellite.png"),
-            ("GearTrain", k_MarkersDir + "/marker_geartrain.png"),
+            ("Turbine", k_MarkersDir + "/marker_turbine.png", "Wind Turbine"),
+            ("Satellite", k_MarkersDir + "/marker_satellite.png", "Satellite"),
+            ("GearTrain", k_MarkersDir + "/marker_geartrain.png", "Gear Train"),
         };
 
         [MenuItem("Tools/AR/Rebuild Image Tracking Demo")]
@@ -51,6 +53,7 @@ namespace ARVDU.EditorTools
             foreach (var dir in new[] { k_MaterialsDir, k_ModelsDir, k_PrefabsDir, k_ScenesDir })
                 Directory.CreateDirectory(dir);
 
+            ConfigurePortraitOrientation();
             ConfigureMarkerImports();
             var materials = BuildMaterials();
             var meshes = BuildMeshes();
@@ -78,7 +81,7 @@ namespace ARVDU.EditorTools
         /// </summary>
         static void ConfigureMarkerImports()
         {
-            foreach (var (_, texturePath) in k_Markers)
+            foreach (var (_, texturePath, _) in k_Markers)
             {
                 if (AssetImporter.GetAtPath(texturePath) is not TextureImporter importer)
                 {
@@ -111,7 +114,7 @@ namespace ARVDU.EditorTools
 
             for (var i = 0; i < k_Markers.Length; i++)
             {
-                var (imageName, texturePath) = k_Markers[i];
+                var (imageName, texturePath, _) = k_Markers[i];
                 var texture = AssetDatabase.LoadAssetAtPath<Texture2D>(texturePath);
 
                 library.Add();
@@ -430,8 +433,14 @@ namespace ARVDU.EditorTools
         static void BuildScene(
             XRReferenceImageLibrary library, Dictionary<string, GameObject> prefabs)
         {
-            // Built additively so whatever the user already had open is left alone.
-            var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
+            // Single mode, not additive: if this exact scene is already open (e.g. the user is
+            // looking at it, or a previous run of this tool left it open), building additively
+            // over it would collide when saving -- "Overwriting the same path as another open
+            // scene is not allowed" -- and closing it first runs into "can't close the last loaded
+            // scene" whenever it is the only one open. Single mode replaces whatever is currently
+            // open in one step, sidestepping both restrictions, and leaves the rebuilt scene as the
+            // one visibly open afterwards, which is what re-running this tool should do anyway.
+            var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
             var session = new GameObject("AR Session", typeof(ARSession), typeof(ARInputManager));
             SceneManager.MoveGameObjectToScene(session, scene);
@@ -485,15 +494,18 @@ namespace ARVDU.EditorTools
 
             for (var i = 0; i < k_Markers.Length; i++)
             {
-                var (imageName, _) = k_Markers[i];
+                var (imageName, _, displayName) = k_Markers[i];
                 var element = bindingList.GetArrayElementAtIndex(i);
                 element.FindPropertyRelative("referenceImageName").stringValue = imageName;
+                element.FindPropertyRelative("displayName").stringValue = displayName;
                 element.FindPropertyRelative("prefab").objectReferenceValue = prefabs[imageName];
                 element.FindPropertyRelative("widthRelativeToImage").floatValue = 0.9f;
                 element.FindPropertyRelative("offsetRelativeToImage").vector3Value = Vector3.zero;
             }
 
             spawnerObject.ApplyModifiedPropertiesWithoutUndo();
+
+            BuildHud(scene, spawner);
 
             var lightGo = new GameObject("Directional Light", typeof(Light));
             SceneManager.MoveGameObjectToScene(lightGo, scene);
@@ -503,11 +515,124 @@ namespace ARVDU.EditorTools
             light.shadows = LightShadows.Soft;
             lightGo.transform.rotation = Quaternion.Euler(50f, -30f, 0f);
 
-            EditorSceneManager.SaveScene(scene, k_ScenePath);
-            EditorSceneManager.CloseScene(scene, removeScene: true);
+            if (!EditorSceneManager.SaveScene(scene, k_ScenePath))
+                throw new System.IO.IOException($"Failed to save {k_ScenePath} -- see the Console for the underlying error.");
+
+            // Left open rather than closed: with Single mode above, this is now the Editor's only
+            // loaded scene, and closing the last loaded scene isn't supported anyway -- and
+            // leaving the freshly rebuilt scene visible is the more useful outcome here.
 
             AddSceneToBuildSettings(k_ScenePath);
         }
+
+        // ---------------------------------------------------------------- HUD
+
+        const string k_InfoText = "lab work 1 - Augmented Reality Engeenering\nLouis Persin";
+
+        static void BuildHud(Scene scene, TrackedImageModelSpawner spawner)
+        {
+            var canvasGo = new GameObject(
+                "HUD Canvas", typeof(Canvas), typeof(CanvasScaler));
+            SceneManager.MoveGameObjectToScene(canvasGo, scene);
+
+            var canvas = canvasGo.GetComponent<Canvas>();
+            canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+
+            // Reference resolution is portrait so text keeps its intended size and position with
+            // the player locked to portrait (see ConfigurePortraitOrientation).
+            var scaler = canvasGo.GetComponent<CanvasScaler>();
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.referenceResolution = new Vector2(1080f, 1920f);
+            scaler.matchWidthOrHeight = 0.5f;
+
+            var objectNameLabel = CreateHudLabel(
+                canvasGo.transform, "Object Name Label",
+                anchorMin: new Vector2(0.5f, 0f), anchorMax: new Vector2(0.5f, 0f),
+                pivot: new Vector2(0.5f, 0f), anchoredPosition: new Vector2(0f, 90f),
+                size: new Vector2(920f, 130f), fontSize: 64f,
+                alignment: TextAlignmentOptions.Center);
+            objectNameLabel.text = string.Empty;
+            // Hidden (panel and all) until TrackedImageModelSpawner reports a tracked model.
+            var objectNamePanel = objectNameLabel.transform.parent.gameObject;
+            objectNamePanel.SetActive(false);
+
+            var infoLabel = CreateHudLabel(
+                canvasGo.transform, "Info Label",
+                anchorMin: new Vector2(1f, 1f), anchorMax: new Vector2(1f, 1f),
+                pivot: new Vector2(1f, 1f), anchoredPosition: new Vector2(-24f, -24f),
+                size: new Vector2(620f, 140f), fontSize: 32f,
+                alignment: TextAlignmentOptions.TopRight);
+            infoLabel.text = k_InfoText;
+
+            var hud = canvasGo.AddComponent<ObjectNameHud>();
+            var hudObject = new SerializedObject(hud);
+            hudObject.FindProperty("m_Spawner").objectReferenceValue = spawner;
+            hudObject.FindProperty("m_Label").objectReferenceValue = objectNameLabel;
+            hudObject.FindProperty("m_Panel").objectReferenceValue = objectNamePanel;
+            hudObject.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        /// <summary>
+        /// A screen-space label with a translucent backing panel so it stays legible over an
+        /// arbitrary camera feed. Anchor/pivot/position follow uGUI's usual anchored-position
+        /// convention: e.g. anchor+pivot both (1,1) with a negative offset pins to the top-right.
+        /// </summary>
+        static TMP_Text CreateHudLabel(
+            Transform parent, string name,
+            Vector2 anchorMin, Vector2 anchorMax, Vector2 pivot, Vector2 anchoredPosition,
+            Vector2 size, float fontSize, TextAlignmentOptions alignment)
+        {
+            // The background and the text are separate GameObjects, not two Graphic components
+            // (Image + TextMeshProUGUI) stacked on one -- doing that throws a NullReferenceException
+            // from inside uGUI's canvas-rebuild plumbing when the object is built and wired up in
+            // the same tick, as this editor-script scene generation does.
+            var panelGo = new GameObject(name, typeof(RectTransform), typeof(Image));
+            panelGo.transform.SetParent(parent, false);
+
+            var rect = panelGo.GetComponent<RectTransform>();
+            rect.anchorMin = anchorMin;
+            rect.anchorMax = anchorMax;
+            rect.pivot = pivot;
+            rect.anchoredPosition = anchoredPosition;
+            rect.sizeDelta = size;
+
+            panelGo.GetComponent<Image>().color = new Color(0f, 0f, 0f, 0.4f);
+
+            var textGo = new GameObject("Text", typeof(RectTransform));
+            textGo.transform.SetParent(panelGo.transform, false);
+
+            var textRect = textGo.GetComponent<RectTransform>();
+            textRect.anchorMin = Vector2.zero;
+            textRect.anchorMax = Vector2.one;
+            textRect.offsetMin = new Vector2(24f, 12f);
+            textRect.offsetMax = new Vector2(-24f, -12f);
+
+            var text = textGo.AddComponent<TextMeshProUGUI>();
+            // Assign the font explicitly rather than relying on TMP_Settings' implicit default --
+            // that resolution can be a frame late (or simply unset) when this runs from an
+            // in-memory editor script rather than the normal Editor GUI flow.
+            text.font = AssetDatabase.LoadAssetAtPath<TMP_FontAsset>(
+                "Assets/TextMesh Pro/Resources/Fonts & Materials/LiberationSans SDF.asset");
+            text.fontSize = fontSize;
+            text.alignment = alignment;
+            text.color = Color.white;
+            text.textWrappingMode = TextWrappingModes.Normal;
+            return text;
+        }
+
+        // ---------------------------------------------------------------- player settings
+
+        /// <summary>Locks the player to portrait -- this is a handheld, point-the-phone-at-a-
+        /// picture experience, not something meant to be held sideways.</summary>
+        static void ConfigurePortraitOrientation()
+        {
+            PlayerSettings.defaultInterfaceOrientation = UIOrientation.Portrait;
+            PlayerSettings.allowedAutorotateToPortrait = true;
+            PlayerSettings.allowedAutorotateToPortraitUpsideDown = false;
+            PlayerSettings.allowedAutorotateToLandscapeLeft = false;
+            PlayerSettings.allowedAutorotateToLandscapeRight = false;
+        }
+
 
         static void AddSceneToBuildSettings(string path)
         {
