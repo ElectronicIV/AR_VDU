@@ -3,11 +3,16 @@ using System.IO;
 using System.Linq;
 using Unity.XR.CoreUtils;
 using UnityEditor;
+using UnityEditor.Events;
 using UnityEditor.SceneManagement;
 using UnityEditor.XR.ARSubsystems;
 using UnityEngine;
+using UnityEngine.EventSystems;
+using UnityEngine.Events;
 using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.UI;
 using UnityEngine.InputSystem.XR;
+using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 using UnityEngine.XR.ARFoundation;
@@ -39,6 +44,12 @@ namespace ARVDU.EditorTools
         /// <summary>Printed width of each marker, in metres. A4 landscape fits 20 cm comfortably.</summary>
         const float k_MarkerWidthMetres = 0.2f;
 
+        /// <summary>Width of a tap-placed model, in metres. Small enough to sit on a desk.</summary>
+        const float k_PlacedWidthMetres = 0.25f;
+
+        static readonly Color k_PlaneFill = new(0.28f, 0.72f, 1f, 0.26f);
+        static readonly Color k_PlaneOutline = new(0.45f, 0.85f, 1f, 0.85f);
+
         /// <summary>Reference image name -> marker texture and HUD display name, in library order.</summary>
         static readonly (string imageName, string texturePath, string displayName)[] k_Markers =
         {
@@ -47,7 +58,7 @@ namespace ARVDU.EditorTools
             ("GearTrain", k_MarkersDir + "/marker_geartrain.png", "Gear Train"),
         };
 
-        [MenuItem("Tools/AR/Rebuild Image Tracking Demo")]
+        [MenuItem("Tools/AR/Rebuild AR Demo")]
         public static void BuildAll()
         {
             foreach (var dir in new[] { k_MaterialsDir, k_ModelsDir, k_PrefabsDir, k_ScenesDir })
@@ -65,8 +76,14 @@ namespace ARVDU.EditorTools
                 ["GearTrain"] = BuildGearTrainPrefab(materials, meshes),
             };
 
+            // Built before BuildScene, like the model prefabs: BuildScene opens a fresh scene in
+            // Single mode, which would destroy any half-built GameObject still lying around.
+            var planePrefab = BuildPlanePrefab(
+                MakeUnlitTransparentMaterial("M_PlaneOverlay", k_PlaneFill),
+                MakeUnlitTransparentMaterial("M_PlaneOutline", k_PlaneOutline));
+
             var library = BuildReferenceImageLibrary();
-            BuildScene(library, prefabs);
+            BuildScene(library, prefabs, planePrefab);
 
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
@@ -152,6 +169,63 @@ namespace ARVDU.EditorTools
             material.SetFloat("_Smoothness", smoothness);
             material.SetFloat("_Cull", doubleSided ? 0f : 2f);
             material.doubleSidedGI = doubleSided;
+
+            EditorUtility.SetDirty(material);
+            return material;
+        }
+
+        /// <summary>
+        /// A URP Unlit material set up for alpha blending.
+        /// <para>
+        /// URP's Unlit shader is authored opaque, and "transparent" is material data rather than
+        /// a separate shader -- so tinting the colour's alpha achieves nothing on its own. Every
+        /// piece the inspector would set has to be written by hand: the _Surface/_Blend enums,
+        /// all four blend factors the SubShader reads through [_SrcBlend][_DstBlend],
+        /// [_SrcBlendAlpha][_DstBlendAlpha], ZWrite, the keyword the transparent variant is
+        /// compiled behind, the RenderType override tag, the DepthOnly pass (which would
+        /// otherwise stamp the plane into the depth prepass) and the render queue.
+        /// </para>
+        /// </summary>
+        static Material MakeUnlitTransparentMaterial(string name, Color color)
+        {
+            var path = $"{k_MaterialsDir}/{name}.mat";
+            var shader = Shader.Find("Universal Render Pipeline/Unlit");
+            var material = AssetDatabase.LoadAssetAtPath<Material>(path);
+
+            if (material == null)
+            {
+                material = new Material(shader);
+                AssetDatabase.CreateAsset(material, path);
+            }
+
+            material.shader = shader;
+
+            material.SetFloat("_Surface", 1f);   // SurfaceType.Transparent
+            material.SetFloat("_Blend", 0f);     // BlendMode.Alpha
+            material.SetFloat("_AlphaClip", 0f);
+            material.SetFloat("_QueueOffset", 0f);
+
+            // Planes get looked at from underneath as often as from above.
+            material.SetFloat("_Cull", (float)CullMode.Off);
+
+            material.SetFloat("_SrcBlend", (float)BlendMode.SrcAlpha);
+            material.SetFloat("_DstBlend", (float)BlendMode.OneMinusSrcAlpha);
+            material.SetFloat("_SrcBlendAlpha", (float)BlendMode.One);
+            material.SetFloat("_DstBlendAlpha", (float)BlendMode.OneMinusSrcAlpha);
+
+            // No depth write, so opaque models still occlude the overlay correctly even though
+            // the plane draws after them.
+            material.SetFloat("_ZWrite", 0f);
+
+            material.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+            material.DisableKeyword("_ALPHATEST_ON");
+            material.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+
+            material.SetOverrideTag("RenderType", "Transparent");
+            material.SetShaderPassEnabled("DepthOnly", false);
+            material.renderQueue = (int)RenderQueue.Transparent;
+
+            material.SetColor("_BaseColor", color);
 
             EditorUtility.SetDirty(material);
             return material;
@@ -428,10 +502,57 @@ namespace ARVDU.EditorTools
             return SavePrefab(root, "Model_GearTrain");
         }
 
+        // ---------------------------------------------------------------- plane overlay
+
+        /// <summary>
+        /// The prefab <see cref="ARPlaneManager"/> instantiates for each detected surface.
+        /// <para>
+        /// This mirrors what AR Foundation's own "GameObject > XR > AR Default Plane" menu item
+        /// builds, because that code lives in an <c>internal static</c> class and can only be
+        /// copied, not called. Two deliberate differences: both materials are generated here, as
+        /// AF's plane material is bound to a simulation-only shader and its line material is the
+        /// built-in <c>Default-Line.mat</c>, which is not a URP material and renders wrong here.
+        /// </para>
+        /// </summary>
+        static GameObject BuildPlanePrefab(Material fill, Material outline)
+        {
+            var root = new GameObject("AR_PlaneVisualizer");
+
+            // ARPlane explicitly and first: ARPlaneMeshVisualizer requires it, and relying on
+            // [RequireComponent] auto-add ordering here is needlessly fragile.
+            root.AddComponent<ARPlane>();
+            root.AddComponent<MeshFilter>();
+
+            var meshRenderer = root.AddComponent<MeshRenderer>();
+            meshRenderer.sharedMaterial = fill;
+            meshRenderer.shadowCastingMode = ShadowCastingMode.Off;
+            meshRenderer.receiveShadows = false;
+            meshRenderer.lightProbeUsage = LightProbeUsage.Off;
+            meshRenderer.reflectionProbeUsage = ReflectionProbeUsage.Off;
+
+            var lineRenderer = root.AddComponent<LineRenderer>();
+            lineRenderer.sharedMaterials = new[] { outline };
+            lineRenderer.loop = true;
+            lineRenderer.widthCurve = new AnimationCurve(new Keyframe(0f, 0.005f));
+            lineRenderer.numCornerVertices = 4;
+            lineRenderer.numCapVertices = 4;
+            lineRenderer.shadowCastingMode = ShadowCastingMode.Off;
+            lineRenderer.receiveShadows = false;
+
+            // The visualizer writes boundary points in plane-local space.
+            lineRenderer.useWorldSpace = false;
+
+            root.AddComponent<MeshCollider>();
+            root.AddComponent<ARPlaneMeshVisualizer>();
+
+            return SavePrefab(root, "AR_PlaneVisualizer");
+        }
+
         // ---------------------------------------------------------------- scene
 
         static void BuildScene(
-            XRReferenceImageLibrary library, Dictionary<string, GameObject> prefabs)
+            XRReferenceImageLibrary library, Dictionary<string, GameObject> prefabs,
+            GameObject planePrefab)
         {
             // Single mode, not additive: if this exact scene is already open (e.g. the user is
             // looking at it, or a previous run of this tool left it open), building additively
@@ -505,7 +626,25 @@ namespace ARVDU.EditorTools
 
             spawnerObject.ApplyModifiedPropertiesWithoutUndo();
 
-            BuildHud(scene, spawner);
+            // Plane detection, raycasting and anchoring: the tap-to-place half of the demo.
+            // All three carry [RequireComponent(typeof(XROrigin))], so the origin is their only
+            // legal home -- same as ARTrackedImageManager above.
+            var planeManager = originGo.AddComponent<ARPlaneManager>();
+            planeManager.planePrefab = planePrefab;
+
+            // Horizontal only: these models are authored standing upright, so one placed on a
+            // wall with yaw-only rotation would hang off it awkwardly. Enabling Vertical later
+            // also means orienting to plane.normal instead -- see TapToPlaceSpawner.ResolveYaw.
+            planeManager.requestedDetectionMode = PlaneDetectionMode.Horizontal;
+
+            originGo.AddComponent<ARRaycastManager>();
+            originGo.AddComponent<ARAnchorManager>();
+
+            var placer = BuildPlacer(originGo, camera, prefabs);
+            var planeToggle = originGo.AddComponent<PlaneVisibilityToggle>();
+
+            BuildEventSystem(scene);
+            BuildHud(scene, spawner, placer, planeToggle);
 
             var lightGo = new GameObject("Directional Light", typeof(Light));
             SceneManager.MoveGameObjectToScene(lightGo, scene);
@@ -525,14 +664,73 @@ namespace ARVDU.EditorTools
             AddSceneToBuildSettings(k_ScenePath);
         }
 
+        /// <summary>
+        /// Wires the tap-placement spawner. Its pool is built from the same marker table the
+        /// image-tracking bindings use, so the random models and their HUD names can never drift
+        /// apart from the tracked ones.
+        /// </summary>
+        static TapToPlaceSpawner BuildPlacer(
+            GameObject originGo, Camera camera, Dictionary<string, GameObject> prefabs)
+        {
+            var placer = originGo.AddComponent<TapToPlaceSpawner>();
+            var placerObject = new SerializedObject(placer);
+
+            var list = placerObject.FindProperty("m_Placeables");
+            list.arraySize = k_Markers.Length;
+
+            for (var i = 0; i < k_Markers.Length; i++)
+            {
+                var (imageName, _, displayName) = k_Markers[i];
+                var element = list.GetArrayElementAtIndex(i);
+                element.FindPropertyRelative("displayName").stringValue = displayName;
+                element.FindPropertyRelative("prefab").objectReferenceValue = prefabs[imageName];
+
+                // "Face the camera" means +Z points at it, but the turbine's nacelle nose is
+                // built along -Z, so without this it would greet you with its tail.
+                element.FindPropertyRelative("yawOffsetDegrees").floatValue =
+                    imageName == "Turbine" ? 180f : 0f;
+            }
+
+            placerObject.FindProperty("m_WidthMetres").floatValue = k_PlacedWidthMetres;
+            placerObject.FindProperty("m_FaceCameraOnPlace").boolValue = true;
+            placerObject.FindProperty("m_AvoidImmediateRepeat").boolValue = true;
+            placerObject.FindProperty("m_Camera").objectReferenceValue = camera;
+            placerObject.ApplyModifiedPropertiesWithoutUndo();
+
+            return placer;
+        }
+
+        /// <summary>
+        /// The EventSystem the HUD buttons need in order to receive clicks at all.
+        /// </summary>
+        static void BuildEventSystem(Scene scene)
+        {
+            // EventSystem first: BaseInputModule is [RequireComponent(typeof(EventSystem))].
+            var go = new GameObject("EventSystem", typeof(EventSystem));
+            SceneManager.MoveGameObjectToScene(go, scene);
+
+            // InputSystemUIInputModule, never the legacy StandaloneInputModule: this project runs
+            // activeInputHandler 1 (Input System only), where every UnityEngine.Input call throws
+            // and StandaloneInputModule is built entirely on them.
+            //
+            // actionsAsset is deliberately left null -- the module assigns its own embedded
+            // default actions at runtime when it has none, and anything assigned from here would
+            // be an in-memory ScriptableObject that doesn't survive the scene save.
+            go.AddComponent<InputSystemUIInputModule>();
+        }
+
         // ---------------------------------------------------------------- HUD
 
         const string k_InfoText = "lab work 1 - Augmented Reality Engeenering\nLouis Persin";
 
-        static void BuildHud(Scene scene, TrackedImageModelSpawner spawner)
+        static void BuildHud(
+            Scene scene, TrackedImageModelSpawner spawner,
+            TapToPlaceSpawner placer, PlaneVisibilityToggle planeToggle)
         {
+            // GraphicRaycaster is what turns the canvas into something the EventSystem can hit --
+            // without it the buttons are inert.
             var canvasGo = new GameObject(
-                "HUD Canvas", typeof(Canvas), typeof(CanvasScaler));
+                "HUD Canvas", typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
             SceneManager.MoveGameObjectToScene(canvasGo, scene);
 
             var canvas = canvasGo.GetComponent<Canvas>();
@@ -566,12 +764,96 @@ namespace ARVDU.EditorTools
                 alignment: TextAlignmentOptions.TopLeft);
             infoLabel.text = k_InfoText;
 
+            // Buttons sit just above the name label, which occupies y 90-220 at this reference
+            // resolution. Split either side of centre so neither drifts under a thumb.
+            var planesButton = CreateHudButton(
+                canvasGo.transform, "Planes Button",
+                pivot: new Vector2(1f, 0f), anchoredPosition: new Vector2(-15f, 250f),
+                size: new Vector2(450f, 120f), text: "Hide Planes", out var planesLabel);
+
+            var clearButton = CreateHudButton(
+                canvasGo.transform, "Clear Button",
+                pivot: new Vector2(0f, 0f), anchoredPosition: new Vector2(15f, 250f),
+                size: new Vector2(450f, 120f), text: "Clear", out _);
+
+            BindButton(planesButton, planeToggle.Toggle);
+            BindButton(clearButton, placer.ClearAll);
+
+            // Back-fill: these components were created before the buttons existed, and the
+            // buttons' onClick needed the components. One of the two has to go second.
+            var toggleObject = new SerializedObject(planeToggle);
+            toggleObject.FindProperty("m_PlanesVisible").boolValue = true;
+            toggleObject.FindProperty("m_ButtonLabel").objectReferenceValue = planesLabel;
+            toggleObject.ApplyModifiedPropertiesWithoutUndo();
+
+            var placerObject = new SerializedObject(placer);
+            var blockers = placerObject.FindProperty("m_BlockingRects");
+            blockers.arraySize = 2;
+            blockers.GetArrayElementAtIndex(0).objectReferenceValue =
+                planesButton.GetComponent<RectTransform>();
+            blockers.GetArrayElementAtIndex(1).objectReferenceValue =
+                clearButton.GetComponent<RectTransform>();
+            placerObject.ApplyModifiedPropertiesWithoutUndo();
+
             var hud = canvasGo.AddComponent<ObjectNameHud>();
             var hudObject = new SerializedObject(hud);
             hudObject.FindProperty("m_Spawner").objectReferenceValue = spawner;
+            hudObject.FindProperty("m_PlacementSpawner").objectReferenceValue = placer;
             hudObject.FindProperty("m_Label").objectReferenceValue = objectNameLabel;
             hudObject.FindProperty("m_Panel").objectReferenceValue = objectNamePanel;
+            hudObject.FindProperty("m_PlacementLabelSeconds").floatValue = 2f;
             hudObject.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        /// <summary>
+        /// A tappable chip, built on <see cref="CreateHudLabel"/> so the two share their panel +
+        /// child-text structure.
+        /// </summary>
+        static Button CreateHudButton(
+            Transform parent, string name, Vector2 pivot, Vector2 anchoredPosition,
+            Vector2 size, string text, out TMP_Text label)
+        {
+            label = CreateHudLabel(
+                parent, name,
+                anchorMin: new Vector2(0.5f, 0f), anchorMax: new Vector2(0.5f, 0f),
+                pivot: pivot, anchoredPosition: anchoredPosition,
+                size: size, fontSize: 44f, alignment: TextAlignmentOptions.Center);
+            label.text = text;
+
+            var panelGo = label.transform.parent.gameObject;
+            var image = panelGo.GetComponent<Image>();
+
+            // A mid-tone chip rather than the labels' near-black: Selectable's colour transition
+            // MULTIPLIES this by the pressed colour, and a near-black background multiplies to
+            // black, so the button would give no visible press feedback at all.
+            image.color = new Color(0.10f, 0.42f, 0.70f, 0.88f);
+            image.raycastTarget = true;
+
+            var button = panelGo.AddComponent<Button>();
+
+            // AddComponent doesn't assign targetGraphic, and without it the tint does nothing.
+            button.targetGraphic = image;
+
+            var colors = button.colors;
+            colors.pressedColor = new Color(0.55f, 0.55f, 0.55f, 1f);
+            colors.fadeDuration = 0.05f;
+            button.colors = colors;
+
+            return button;
+        }
+
+        /// <summary>
+        /// Adds a <em>persistent</em> click listener -- the kind the inspector shows and the scene
+        /// file stores. A runtime <c>onClick.AddListener</c> lives in a delegate list that is
+        /// never serialized, so it would silently do nothing in a build.
+        /// </summary>
+        static void BindButton(Button button, UnityAction call)
+        {
+            // The call must be a method group on a UnityEngine.Object, never a lambda: a
+            // persistent call is stored as an object reference plus a method name, and a lambda's
+            // target is a compiler-generated closure that serializes as null.
+            UnityEventTools.AddPersistentListener(button.onClick, call);
+            EditorUtility.SetDirty(button);
         }
 
         /// <summary>
@@ -598,7 +880,13 @@ namespace ARVDU.EditorTools
             rect.anchoredPosition = anchoredPosition;
             rect.sizeDelta = size;
 
-            panelGo.GetComponent<Image>().color = new Color(0f, 0f, 0f, 0.4f);
+            var panelImage = panelGo.GetComponent<Image>();
+            panelImage.color = new Color(0f, 0f, 0f, 0.4f);
+
+            // Labels are decoration. Keeping them out of the UI raycast means the new
+            // GraphicRaycaster only ever reports the actual buttons. CreateHudButton turns this
+            // back on for the chips it builds.
+            panelImage.raycastTarget = false;
 
             var textGo = new GameObject("Text", typeof(RectTransform));
             textGo.transform.SetParent(panelGo.transform, false);
@@ -619,6 +907,7 @@ namespace ARVDU.EditorTools
             text.alignment = alignment;
             text.color = Color.white;
             text.textWrappingMode = TextWrappingModes.Normal;
+            text.raycastTarget = false;
             return text;
         }
 
