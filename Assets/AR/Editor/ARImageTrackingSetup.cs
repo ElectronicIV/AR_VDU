@@ -129,19 +129,34 @@ namespace ARVDU.EditorTools
             while (library.count > 0)
                 library.RemoveAt(library.count - 1);
 
-            for (var i = 0; i < k_Markers.Length; i++)
+            var index = 0;
+            foreach (var (imageName, texturePath, _) in k_Markers)
             {
-                var (imageName, texturePath, _) = k_Markers[i];
                 var texture = AssetDatabase.LoadAssetAtPath<Texture2D>(texturePath);
+                if (texture == null)
+                {
+                    // Skip rather than add a broken entry, so one bad path doesn't silently
+                    // shift every later image onto the wrong library slot.
+                    Debug.LogError(
+                        $"[AR setup] No texture at {texturePath}. Update the k_Markers table to " +
+                        "match the files in Assets/AR/Markers, then rebuild. See the README there.");
+                    continue;
+                }
 
                 library.Add();
-                library.SetName(i, imageName);
-                library.SetTexture(i, texture, keepTexture: true);
+                library.SetName(index, imageName);
+                library.SetTexture(index, texture, keepTexture: true);
 
                 // Telling the provider the real-world size lets it report a correct scale from the
-                // first frame and makes tracking converge faster.
-                library.SetSpecifySize(i, true);
-                library.SetSize(i, new Vector2(k_MarkerWidthMetres, k_MarkerWidthMetres));
+                // first frame and makes tracking converge faster. Height follows the image's own
+                // aspect ratio so a non-square picture isn't declared square and mis-scaled --
+                // k_MarkerWidthMetres is the width you print, whatever the shape.
+                library.SetSpecifySize(index, true);
+                library.SetSize(index, new Vector2(
+                    k_MarkerWidthMetres,
+                    k_MarkerWidthMetres * texture.height / texture.width));
+
+                index++;
             }
 
             EditorUtility.SetDirty(library);
