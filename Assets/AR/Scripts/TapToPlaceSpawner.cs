@@ -61,6 +61,11 @@ namespace ARVDU
         [SerializeField]
         Camera m_Camera;
 
+        [SerializeField]
+        [Tooltip("Optional. When set, planes it considers redundant are skipped when choosing " +
+                 "where a tap lands. Subsumed planes are skipped regardless.")]
+        PlaneOverlapFilter m_OverlapFilter;
+
         ARRaycastManager m_RaycastManager;
         ARAnchorManager m_AnchorManager;
 
@@ -153,8 +158,7 @@ namespace ARVDU
             if (!m_RaycastManager.Raycast(screenPosition, m_Hits, TrackableType.PlaneWithinPolygon))
                 return false;
 
-            var hit = m_Hits[0]; // Raycast sorts nearest-first.
-            if (hit.trackable is not ARPlane plane)
+            if (!TryPickHit(out var hit, out var plane))
                 return false;
 
             var model = PickRandom();
@@ -194,6 +198,43 @@ namespace ARVDU
 
             modelPlaced?.Invoke(ResolveLabel(model));
             return true;
+        }
+
+        /// <summary>
+        /// Picks the nearest hit that lands on a plane actually worth placing on.
+        /// <para>
+        /// Raycasting does not filter planes the way rendering does: a plane ARCore has already
+        /// merged away is invisible but still reports hits, so taking the nearest hit blindly can
+        /// drop a model onto a surface the user cannot see, at the wrong height. Redundant
+        /// duplicates (see <see cref="PlaneOverlapFilter"/>) have the same problem, so both are
+        /// skipped in favour of the plane that is actually on screen.
+        /// </para>
+        /// </summary>
+        bool TryPickHit(out ARRaycastHit hit, out ARPlane plane)
+        {
+            // m_Hits is sorted nearest-first, so the first acceptable one is the right one.
+            foreach (var candidate in m_Hits)
+            {
+                if (candidate.trackable is not ARPlane candidatePlane)
+                    continue;
+
+                if (candidatePlane.subsumedBy != null)
+                    continue;
+
+                if (candidatePlane.trackingState != TrackingState.Tracking)
+                    continue;
+
+                if (m_OverlapFilter != null && m_OverlapFilter.IsRedundant(candidatePlane))
+                    continue;
+
+                hit = candidate;
+                plane = candidatePlane;
+                return true;
+            }
+
+            hit = default;
+            plane = null;
+            return false;
         }
 
         static string ResolveLabel(PlaceableModel model) =>

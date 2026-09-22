@@ -655,8 +655,17 @@ namespace ARVDU.EditorTools
             originGo.AddComponent<ARRaycastManager>();
             originGo.AddComponent<ARAnchorManager>();
 
-            var placer = BuildPlacer(originGo, camera, prefabs);
+            // One real surface often comes back as several overlapping planes that ARCore never
+            // merges on its own. This decides which are redundant; the toggle and the placer both
+            // consult it so a duplicate is neither drawn nor placed on.
+            var overlapFilter = originGo.AddComponent<PlaneOverlapFilter>();
+
+            var placer = BuildPlacer(originGo, camera, prefabs, overlapFilter);
             var planeToggle = originGo.AddComponent<PlaneVisibilityToggle>();
+
+            var toggleFilter = new SerializedObject(planeToggle);
+            toggleFilter.FindProperty("m_OverlapFilter").objectReferenceValue = overlapFilter;
+            toggleFilter.ApplyModifiedPropertiesWithoutUndo();
 
             BuildEventSystem(scene);
             BuildHud(scene, spawner, placer, planeToggle);
@@ -685,7 +694,8 @@ namespace ARVDU.EditorTools
         /// apart from the tracked ones.
         /// </summary>
         static TapToPlaceSpawner BuildPlacer(
-            GameObject originGo, Camera camera, Dictionary<string, GameObject> prefabs)
+            GameObject originGo, Camera camera, Dictionary<string, GameObject> prefabs,
+            PlaneOverlapFilter overlapFilter)
         {
             var placer = originGo.AddComponent<TapToPlaceSpawner>();
             var placerObject = new SerializedObject(placer);
@@ -710,6 +720,7 @@ namespace ARVDU.EditorTools
             placerObject.FindProperty("m_FaceCameraOnPlace").boolValue = true;
             placerObject.FindProperty("m_AvoidImmediateRepeat").boolValue = true;
             placerObject.FindProperty("m_Camera").objectReferenceValue = camera;
+            placerObject.FindProperty("m_OverlapFilter").objectReferenceValue = overlapFilter;
             placerObject.ApplyModifiedPropertiesWithoutUndo();
 
             return placer;

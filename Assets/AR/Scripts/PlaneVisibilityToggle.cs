@@ -30,6 +30,11 @@ namespace ARVDU
         [SerializeField]
         string m_ShowText = "Show Planes";
 
+        [SerializeField]
+        [Tooltip("Optional. Planes it marks redundant stay hidden even when the overlay is on, " +
+                 "so one real surface is drawn once rather than as a stack of slabs.")]
+        PlaneOverlapFilter m_OverlapFilter;
+
         ARPlaneManager m_PlaneManager;
 
         public bool planesVisible => m_PlanesVisible;
@@ -39,10 +44,22 @@ namespace ARVDU
         void OnEnable()
         {
             m_PlaneManager.trackablesChanged.AddListener(OnTrackablesChanged);
+
+            // This component is the only thing that drives plane active state; the filter just
+            // decides policy. Two writers would fight over every SetActive.
+            if (m_OverlapFilter != null)
+                m_OverlapFilter.suppressionChanged += Apply;
+
             Apply();
         }
 
-        void OnDisable() => m_PlaneManager.trackablesChanged.RemoveListener(OnTrackablesChanged);
+        void OnDisable()
+        {
+            m_PlaneManager.trackablesChanged.RemoveListener(OnTrackablesChanged);
+
+            if (m_OverlapFilter != null)
+                m_OverlapFilter.suppressionChanged -= Apply;
+        }
 
         /// <summary>
         /// Flips the overlay. Public, void and argument-free because the HUD button binds to it
@@ -61,22 +78,25 @@ namespace ARVDU
             // Planes found after the toggle are instantiated active, so without this the overlay
             // leaks back one plane at a time.
             foreach (var plane in changes.added)
-            {
-                if (plane != null)
-                    plane.gameObject.SetActive(m_PlanesVisible);
-            }
+                ApplyTo(plane);
         }
 
         void Apply()
         {
             foreach (var plane in m_PlaneManager.trackables)
-            {
-                if (plane != null)
-                    plane.gameObject.SetActive(m_PlanesVisible);
-            }
+                ApplyTo(plane);
 
             if (m_ButtonLabel != null)
                 m_ButtonLabel.text = m_PlanesVisible ? m_HideText : m_ShowText;
+        }
+
+        void ApplyTo(ARPlane plane)
+        {
+            if (plane == null)
+                return;
+
+            var redundant = m_OverlapFilter != null && m_OverlapFilter.IsRedundant(plane);
+            plane.gameObject.SetActive(m_PlanesVisible && !redundant);
         }
     }
 }
