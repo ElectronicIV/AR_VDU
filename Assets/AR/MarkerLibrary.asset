@@ -18,8 +18,8 @@ MonoBehaviour:
     m_Storage: []
   m_Images:
   - m_SerializedGuid:
-      m_GuidLow: 4868398945825810883
-      m_GuidHigh: 4149200542691639992
+      m_GuidLow: 5265075692350040095
+      m_GuidHigh: 17617932489396087437
     m_SerializedTextureGuid:
       m_GuidLow: 9009784320752415741
       m_GuidHigh: 6386371757672331
@@ -28,8 +28,8 @@ MonoBehaviour:
     m_Name: Turbine
     m_Texture: {fileID: 2800000, guid: 9554f3fd2f1a7d098b07050c5fb01600, type: 3}
   - m_SerializedGuid:
-      m_GuidLow: 5411320825728739412
-      m_GuidHigh: 6515216624054471562
+      m_GuidLow: 4800868952391714036
+      m_GuidHigh: 12465752177708811430
     m_SerializedTextureGuid:
       m_GuidLow: 17913814963419645626
       m_GuidHigh: 15354559464618259498
@@ -38,8 +38,8 @@ MonoBehaviour:
     m_Name: Satellite
     m_Texture: {fileID: 2800000, guid: 3ab486baa7ccf89a2af42e2b7b5a16d5, type: 3}
   - m_SerializedGuid:
-      m_GuidLow: 5523355985580651261
-      m_GuidHigh: 7574388029846490268
+      m_GuidLow: 5427026270163597883
+      m_GuidHigh: 9770298637109227925
     m_SerializedTextureGuid:
       m_GuidLow: 10460725176978663783
       m_GuidHigh: 5583296282272909882
