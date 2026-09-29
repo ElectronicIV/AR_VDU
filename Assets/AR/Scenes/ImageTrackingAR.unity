@@ -565,6 +565,9 @@ MonoBehaviour:
   - displayName: Gear Train
     prefab: {fileID: 8306711979946164915, guid: 44eb3893be2c727bab31784d9ad04bb9, type: 3}
     yawOffsetDegrees: 0
+  - displayName: Sitting Figure
+    prefab: {fileID: 6214622760279354725, guid: 26a5da8f1a269e3d5bc631f21228366c, type: 3}
+    yawOffsetDegrees: 0
   m_WidthMetres: 0.25
   m_FaceCameraOnPlace: 1
   m_AvoidImmediateRepeat: 1
@@ -573,6 +576,8 @@ MonoBehaviour:
   - {fileID: 755087584}
   - {fileID: 1646765155}
   m_Camera: {fileID: 907931626}
+  m_AirSpawnDistanceMetres: 0.5
+  m_AirSpawnDropMetres: 0.25
   m_OverlapFilter: {fileID: 625894556}
 --- !u!114 &625894556
 MonoBehaviour:
