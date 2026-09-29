@@ -26,11 +26,13 @@ namespace ARVDU
     }
 
     /// <summary>
-    /// Drops a random model onto whatever AR plane the user taps.
+    /// Drops a random model onto whatever AR plane the user taps, or in mid-air just in front of
+    /// the camera via <see cref="SpawnAtCamera"/>.
     /// <para>
-    /// Placement is plane-only by design: no mid-air fallback. A tap that doesn't land on a
-    /// detected surface does nothing, which is the honest behaviour -- a model floating at a
-    /// guessed depth has no real-world contact and drifts as tracking refines.
+    /// Tapping is plane-only by design: no mid-air fallback. A tap that doesn't land on a
+    /// detected surface does nothing, rather than guessing a depth to float the model at.
+    /// Mid-air placement is a separate, explicit action (the HUD's Spawn button), at a fixed
+    /// offset from the phone rather than a guessed surface.
     /// </para>
     /// </summary>
     [RequireComponent(typeof(ARRaycastManager))]
@@ -60,6 +62,17 @@ namespace ARVDU
 
         [SerializeField]
         Camera m_Camera;
+
+        [SerializeField]
+        [Tooltip("How far in front of the camera SpawnAtCamera places a model, in metres. Measured " +
+                 "along the view direction, so the model lands where the phone is pointing.")]
+        float m_AirSpawnDistanceMetres = 0.5f;
+
+        [SerializeField]
+        [Tooltip("How far below that point the model's base goes, in metres. The models are about " +
+                 "30 cm tall with their pivot at the base, so 0.25 puts one just below the middle " +
+                 "of the view.")]
+        float m_AirSpawnDropMetres = 0.25f;
 
         [SerializeField]
         [Tooltip("Optional. When set, planes it considers redundant are skipped when choosing " +
@@ -165,7 +178,10 @@ namespace ARVDU
             if (model?.prefab == null)
                 return false;
 
-            var pose = new Pose(hit.pose.position, ResolveYaw(hit.pose.position, model));
+            var position = hit.pose.position;
+            var pose = new Pose(position, ResolveYaw(m_Camera != null
+                ? m_Camera.transform.position - position
+                : Vector3.zero, model));
 
             // Anchoring is what makes a placed model stay on its real-world spot: the provider
             // keeps re-posing the anchor as its map of the room improves, and a model parented
@@ -174,9 +190,84 @@ namespace ARVDU
             if (m_AnchorManager.enabled && m_AnchorManager.subsystem != null)
                 anchor = m_AnchorManager.AttachAnchor(plane, pose);
 
+            if (anchor == null)
+            {
+                Debug.LogWarning(
+                    $"[{nameof(TapToPlaceSpawner)}] Could not anchor to plane {plane.trackableId}; " +
+                    "placing unanchored -- it may drift.", this);
+            }
+
+            Spawn(model, pose, anchor);
+            return true;
+        }
+
+        /// <summary>
+        /// Places a random model in mid-air, a little in front of and below the camera. Public,
+        /// void and argument-free because the HUD's Spawn button binds to it as a serialized
+        /// persistent listener.
+        /// <para>
+        /// <c>async void</c> rather than a discarded <see cref="Awaitable"/>: this is an event
+        /// handler with no caller to await it, and async void routes exceptions to Unity's
+        /// synchronization context, so they land in the Console instead of vanishing.
+        /// </para>
+        /// </summary>
+        public async void SpawnAtCamera()
+        {
+            if (m_Camera == null)
+                return;
+
+            var model = PickRandom();
+            if (model?.prefab == null)
+                return;
+
+            // Captured now, not after the await: the phone keeps moving while the anchor is
+            // being created, and the model belongs where it was when the button was pressed.
+            // Forward along the view direction so it's on screen whatever the phone's tilt; the
+            // drop is along world down, so "lower" means lower in the room, not the screen.
+            var cameraTransform = m_Camera.transform;
+            var cameraPosition = cameraTransform.position;
+            var position = cameraPosition
+                + cameraTransform.forward * m_AirSpawnDistanceMetres
+                + Vector3.down * m_AirSpawnDropMetres;
+
+            var pose = new Pose(position, ResolveYaw(cameraPosition - position, model));
+
+            // There's no plane to attach to in mid-air, so this is a free-standing anchor. It
+            // still matters: an unanchored object sits at fixed Unity coordinates, and those
+            // drift against the real room as ARCore refines its map.
+            ARAnchor anchor = null;
+            if (m_AnchorManager.enabled && m_AnchorManager.subsystem != null)
+            {
+                var result = await m_AnchorManager.TryAddAnchorAsync(pose);
+                if (result.status.IsSuccess())
+                    anchor = result.value;
+            }
+
+            // The await can outlive this component (scene unload, app quit).
+            if (this == null)
+                return;
+
+            if (anchor == null)
+            {
+                Debug.LogWarning(
+                    $"[{nameof(TapToPlaceSpawner)}] Could not create an anchor at the camera; " +
+                    "placing unanchored -- it may drift.", this);
+            }
+
+            Spawn(model, pose, anchor);
+        }
+
+        /// <summary>
+        /// Instantiates <paramref name="model"/> at <paramref name="pose"/> -- under
+        /// <paramref name="anchor"/> when there is one -- and records it so <see cref="ClearAll"/>
+        /// can remove it. Shared by tap placement and <see cref="SpawnAtCamera"/>.
+        /// </summary>
+        void Spawn(PlaceableModel model, Pose pose, ARAnchor anchor)
+        {
             GameObject instance;
             if (anchor != null)
             {
+                // The anchor carries the pose, so the model sits at local identity under it.
                 instance = Instantiate(model.prefab, anchor.transform);
                 instance.transform.localPosition = Vector3.zero;
                 instance.transform.localRotation = Quaternion.identity;
@@ -184,9 +275,6 @@ namespace ARVDU
             }
             else
             {
-                Debug.LogWarning(
-                    $"[{nameof(TapToPlaceSpawner)}] Could not anchor to plane {plane.trackableId}; " +
-                    "placing unanchored -- it may drift.", this);
                 instance = Instantiate(model.prefab, pose.position, pose.rotation);
             }
 
@@ -197,7 +285,6 @@ namespace ARVDU
             m_Placed.Add(instance);
 
             modelPlaced?.Invoke(ResolveLabel(model));
-            return true;
         }
 
         /// <summary>
@@ -294,7 +381,7 @@ namespace ARVDU
         }
 
         /// <summary>
-        /// Yaw-only rotation toward the camera.
+        /// Upright, yaw-only rotation that turns the model's front toward <paramref name="facing"/>.
         /// <para>
         /// <see cref="ARRaycastHit.pose"/>'s own rotation is ignored on purpose: on a horizontal
         /// plane its up axis is the plane normal and its yaw is arbitrary, so models would land
@@ -302,20 +389,20 @@ namespace ARVDU
         /// camera-to-model vector would tip a turbine over to "look up" at a phone held above it.
         /// </para>
         /// </summary>
-        Quaternion ResolveYaw(Vector3 worldPosition, PlaceableModel model)
+        Quaternion ResolveYaw(Vector3 facing, PlaceableModel model)
         {
             var offset = Quaternion.AngleAxis(model.yawOffsetDegrees, Vector3.up);
 
-            if (!m_FaceCameraOnPlace || m_Camera == null)
+            if (!m_FaceCameraOnPlace)
                 return offset;
 
-            var toCamera = m_Camera.transform.position - worldPosition;
-            toCamera.y = 0f;
+            facing.y = 0f;
 
-            if (toCamera.sqrMagnitude < 1e-6f) // Camera directly overhead: no meaningful heading.
+            // Looking straight up or down: there's no meaningful heading to turn toward.
+            if (facing.sqrMagnitude < 1e-6f)
                 return offset;
 
-            return Quaternion.LookRotation(toCamera.normalized, Vector3.up) * offset;
+            return Quaternion.LookRotation(facing.normalized, Vector3.up) * offset;
         }
     }
 }
