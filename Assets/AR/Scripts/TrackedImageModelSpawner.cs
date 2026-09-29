@@ -117,15 +117,42 @@ namespace ARVDU
 
                 // The removed trackable still carries its last-known data, so its reference image
                 // name is available to look the label back up even though it is gone from m_Spawned.
-                if (m_BindingsByName.TryGetValue(removed.Value.referenceImage.name, out var binding))
+                if (TryGetBinding(removed.Value, out var binding))
                     SetLabelVisible(removed.Key, ResolveLabel(binding), false);
             }
         }
 
+        /// <summary>
+        /// Looks up the binding for a tracked image, returning false for an image with no
+        /// reference name.
+        /// <para>
+        /// AR Foundation reports such an image when the provider tracks one that isn't in the
+        /// library -- XR Simulation's default environment ships exactly that -- and a Dictionary
+        /// lookup throws on a null key. Thrown from inside this event handler, that would also
+        /// abort every other image in the same batch.
+        /// </para>
+        /// </summary>
+        bool TryGetBinding(ARTrackedImage trackedImage, out TrackedImageBinding binding)
+        {
+            var imageName = trackedImage != null ? trackedImage.referenceImage.name : null;
+            if (string.IsNullOrEmpty(imageName))
+            {
+                binding = null;
+                return false;
+            }
+
+            return m_BindingsByName.TryGetValue(imageName, out binding);
+        }
+
         void Spawn(ARTrackedImage trackedImage)
         {
+            // Unnamed = not in the library at all. AR Foundation already logs that, so don't
+            // add a misleading "add a binding" warning on top of it.
             var imageName = trackedImage.referenceImage.name;
-            if (!m_BindingsByName.TryGetValue(imageName, out var binding) || binding.prefab == null)
+            if (string.IsNullOrEmpty(imageName))
+                return;
+
+            if (!TryGetBinding(trackedImage, out var binding) || binding.prefab == null)
             {
                 Debug.LogWarning(
                     $"[{nameof(TrackedImageModelSpawner)}] No prefab bound to reference image " +
@@ -147,8 +174,7 @@ namespace ARVDU
             if (!m_Spawned.TryGetValue(trackedImage.trackableId, out var instance) || instance == null)
                 return;
 
-            var imageName = trackedImage.referenceImage.name;
-            if (!m_BindingsByName.TryGetValue(imageName, out var binding))
+            if (!TryGetBinding(trackedImage, out var binding))
                 return;
 
             // trackedImage.size is the physical size of the picture in metres and can change as
